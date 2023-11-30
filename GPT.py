@@ -12,8 +12,12 @@ class Config:
     n_head:     int = 12
     bias:       int = False
     dropout:  float = 0.0
+    n_layer:    int = 12
 
-
+def create_mask(T):
+        mask = torch.full([T,T],float("-inf"))
+        mask = torch.triu(mask,diagonal=1)
+        return mask
 
 
 
@@ -36,9 +40,9 @@ class MultiheadAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) 
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) 
-
+        ##Masking
         attention = (q @ k.transpose(-2,-1)) * (1.0/math.sqrt(k.size(-1)))
-        ######### Apply masked attention
+        attention += create_mask(T)
         attention = F.softmax(attention,dim=-1)
         attention = self.drop(attention)
         output = attention @ v 
@@ -76,11 +80,11 @@ class Decoder_Block(nn.Module):
         return y
 
 class GPT(nn.Module):
-    def __init__(self,config):
+    def __init__(self,config=Config):
         super().__init__()
         self.Token_embeddings = nn.Embedding(config.vocab_size,config.n_embed)
         self.Positional_embeddings = nn.Embedding(config.block_size,config.n_embed)
-        self.Decoder = nn.ModuleList([Decoder_Block(config) for _ in range(config.n_head)])
+        self.Decoder = nn.ModuleList([Decoder_Block(config) for _ in range(config.n_layer)])
         self.dropout = nn.Dropout(config.dropout)
         self.lnorm = nn.LayerNorm(config.n_embed,bias=config.bias)
         self.LMhead = nn.Linear(config.n_embed,config.vocab_size,bias=config.bias)
