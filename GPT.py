@@ -13,6 +13,9 @@ class Config:
     bias:       int = False
     dropout:  float = 0.0
     n_layer:    int = 12
+    batch_size: int = 32
+    EPOCH:      int = 2000
+    learning_rate:int= 5e-5
 
 def create_mask(T):
         mask = torch.full([T,T],float("-inf"))
@@ -79,7 +82,7 @@ class Decoder_Block(nn.Module):
         y = x+self.MLP(self.ln2(x))
         return y
 
-class GPT(nn.Module):
+class GPT_model(nn.Module):
     def __init__(self,config=Config):
         super().__init__()
         self.Token_embeddings = nn.Embedding(config.vocab_size,config.n_embed)
@@ -108,7 +111,7 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1,logits.size(-1)),targets.view(-1), ignore_index=-1)
 
         return logits,loss
-    def generate(self, idx, max_new_tokens,blocksize): #blocksize değiş
+    def generate(self, idx, max_new_tokens,blocksize): 
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
@@ -124,3 +127,93 @@ class GPT(nn.Module):
             # append sampled index to the running sequence
             idx = torch.cat((idx, idx_next), dim=1) # (B, T+1)
         return idx     
+class GPT:
+    def __init__(self,
+                 Data,
+                 vocab_size,
+                 block_size,
+                 n_embed,
+                 n_head,
+                 bias,
+                 dropout,
+                 n_layer,
+                 batch_size,
+                 EPOCH,
+                 learning_rate):
+        self.config = Config(vocab_size=vocab_size,
+                             block_size=block_size,
+                             n_embed=n_embed,
+                             n_head=n_head,
+                             bias=bias,
+                             dropout=dropout,
+                             n_layer=n_layer,
+                             batch_size=batch_size,
+                             EPOCH=EPOCH,
+                             learning_rate=learning_rate)
+        self.gpt = GPT_model(self.config)
+        self.Data = Data
+        self.words = sorted([i for i in set(Data)])
+        idxtos = {idx:w for idx,w in enumerate(self.words)}
+        stoidx = {w:idx for idx,w in enumerate(self.words)}
+        self.encode = lambda s: [stoidx[i] for i in s]
+        self.decode = lambda i: "".join(idxtos[j] for j in i)
+        self.data_tensor = torch.tensor(self.encode(Data), dtype=torch.long)
+        n = int(0.9*len(self.data_tensor)) # first 90% will be train, rest val
+        self.train_data = self.data_tensor[:n]
+        self.val_data = self.data_tensor[n:]
+        self.eval_iters = self.config.EPOCH // 10
+        self.optimizer = torch.optim.AdamW(self.gpt.parameters(), lr=self.config.learning_rate)
+        
+    
+    def get_batch(self,split,batch_size):
+        data = self.train_data if split == 'train' else self.val_data
+        ix = torch.randint(len(self.data_tensor) - self.config.block_size, (batch_size,))
+        x = torch.stack([self.data_tensor[i:i+self.config.block_size] for i in ix])
+        y = torch.stack([self.data_tensor[i+1:i+self.config.block_size+1] for i in ix])
+        return x, y
+    
+    @torch.no_grad()
+    def estimate_loss(self):
+        out = {}
+        self.gpt.eval()
+        for split in ['train', 'val']:
+            losses = torch.zeros(self.eval_iters)
+            for k in range(self.eval_iters):
+                X, Y = self.get_batch(split,self.config.batch_size)
+                logits, loss = self.gpt(X, Y)
+                losses[k] = loss.item()
+            out[split] = losses.mean()
+        self.gpt.train()
+        return out
+    
+    def train(self):
+        for iter in range(self.config.EPOCH):
+
+            # every once in a while evaluate the loss on train and val sets
+            if iter % self.eval_iters == 0:
+                losses = self.estimate_loss()
+                print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
+            # sample a batch of data
+            xb, yb = self.get_batch('train',self.config.batch_size)
+
+            # evaluate the loss
+            logits, loss = self.gpt(xb, yb)
+            self.optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            self.optimizer.step()
+    
+    def generate(self,max_new_tokens):
+        context = torch.zeros((1, 1), dtype=torch.long)
+        print(self.decode(self.gpt.generate(context, max_new_tokens=max_new_tokens,blocksize=self.config.block_size)[0].tolist()))
+
+
+        
+
+        
+        
+
+
+
+
+
